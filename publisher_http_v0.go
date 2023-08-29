@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
 
 	"github.com/ipfs/go-cid"
-	headschema "github.com/ipni/go-libipni/dagsync/ipnisync/head"
+	"github.com/ipni/go-libipni/dagsync/ipnisync/head"
 )
 
 var (
@@ -30,11 +31,28 @@ type (
 	}
 )
 
-func newHttpPublisher(h *Herald) (*httpPublisher, error) {
+func newHttpPublisher(h *Herald, dspub *dsPublisher) (*httpPublisher, error) {
 	var pub httpPublisher
 	pub.h = h
 	pub.server.Handler = pub.serveMux()
+	pub.dsPublisher = dspub
 	return &pub, nil
+}
+
+func (p *httpPublisher) Start(ctx context.Context) error {
+	listener, err := net.Listen("tcp", p.h.httpPublisherListenAddr)
+	if err != nil {
+		return err
+	}
+	go func() {
+		if err := p.server.Serve(listener); errors.Is(err, http.ErrServerClosed) {
+			logger.Info("HTTP publisher stopped successfully.")
+		} else {
+			logger.Errorw("HTTP publisher stopped erroneously.", "err", err)
+		}
+	}()
+	logger.Infow("HTTP publisher started successfully.", "address", listener.Addr())
+	return nil
 }
 
 func (p *httpPublisher) serveMux() *http.ServeMux {
@@ -51,17 +69,17 @@ func (p *httpPublisher) handleGetHead(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	head, err := p.GetHead(r.Context())
+	h, err := p.GetHead(r.Context())
 	if err != nil {
 		logger.Errorw("failed to get head CID", "err", err)
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}
-	if cid.Undef.Equals(head) {
+	if cid.Undef.Equals(h) {
 		http.Error(w, "", http.StatusNoContent)
 		return
 	}
-	signedHead, err := headschema.NewSignedHead(head, p.h.topic, p.h.identity)
+	signedHead, err := head.NewSignedHead(h, p.h.topic, p.h.identity)
 	if err != nil {
 		logger.Errorw("failed to generate signed head message", "err", err)
 		http.Error(w, "", http.StatusInternalServerError)
@@ -77,7 +95,7 @@ func (p *httpPublisher) handleGetHead(w http.ResponseWriter, r *http.Request) {
 	if written, err := w.Write(resp); err != nil {
 		logger.Errorw("failed to write encoded head response", "written", written, "err", err)
 	} else {
-		logger.Debugw("successfully responded with head message", "head", head, "written", written)
+		logger.Debugw("successfully responded with head message", "head", h, "written", written)
 	}
 }
 
@@ -139,4 +157,8 @@ func (p *httpPublisher) GetContent(ctx context.Context, id cid.Cid) (io.ReadClos
 
 func (p *httpPublisher) GetHead(ctx context.Context) (cid.Cid, error) {
 	return p.dsPublisher.GetHead(ctx)
+}
+
+func (p *httpPublisher) Shutdown(ctx context.Context) error {
+	return p.server.Shutdown(ctx)
 }

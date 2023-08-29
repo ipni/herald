@@ -38,6 +38,15 @@ type (
 	}
 )
 
+func newDsPublisher(h *Herald) (*dsPublisher, error) {
+	var ds dsPublisher
+	ds.h = h
+	ds.ls = cidlink.DefaultLinkSystem()
+	ds.ls.StorageReadOpener = ds.storageReadOpener
+	ds.ls.StorageWriteOpener = ds.storageWriteOpener
+	return &ds, nil
+}
+
 func (l *dsPublisher) storageWriteOpener(ctx linking.LinkContext) (io.Writer, linking.BlockWriteCommitter, error) {
 	buf := bytesBuffers.Get().(*bytes.Buffer)
 	buf.Reset()
@@ -111,6 +120,7 @@ func (l *dsPublisher) generateEntries(ctx context.Context, catalog Catalog) (ipl
 }
 
 func (l *dsPublisher) Retract(ctx context.Context, id CatalogID) (cid.Cid, error) {
+	// TODO: find removed entries and remove from the datastore
 	return l.generateAdvertisement(ctx, id, schema.NoEntries, true)
 }
 
@@ -137,7 +147,6 @@ func (l *dsPublisher) generateAdvertisement(ctx context.Context, id CatalogID, e
 		logger.Errorw("failed to sign advertisement", "err", err)
 		return cid.Undef, err
 	}
-
 	adNode, err := ad.ToNode()
 	if err != nil {
 		logger.Errorw("failed to generate IPLD node from advertisement", "err", err)
@@ -156,6 +165,7 @@ func (l *dsPublisher) generateAdvertisement(ctx context.Context, id CatalogID, e
 	}
 	return newHead, nil
 }
+
 func (l *dsPublisher) GetContent(ctx context.Context, cid cid.Cid) (io.ReadCloser, error) {
 	key := dsKey(cidlink.Link{Cid: cid})
 	switch value, err := l.h.ds.Get(ctx, key); {
